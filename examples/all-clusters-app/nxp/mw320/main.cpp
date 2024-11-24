@@ -32,6 +32,7 @@
 #include <app-common/zap-generated/attributes/Accessors.h>
 #include <app-common/zap-generated/ids/Attributes.h>
 #include <app-common/zap-generated/ids/Clusters.h>
+#include <app/codegen-data-model-provider/Instance.h>
 #include <app/server/Dnssd.h>
 #include <app/server/Server.h>
 #include <app/util/af-types.h>
@@ -41,6 +42,7 @@
 #include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <setup_payload/QRCodeSetupPayloadGenerator.h>
+#include <static-supported-modes-manager.h>
 #include <static-supported-temperature-levels.h>
 
 #include <app/InteractionModelEngine.h>
@@ -121,6 +123,7 @@ static struct wlan_network sta_network;
 static struct wlan_network uap_network;
 
 chip::app::Clusters::TemperatureControl::AppSupportedTemperatureLevelsDelegate sAppSupportedTemperatureLevelsDelegate;
+chip::app::Clusters::ModeSelect::StaticSupportedModesManager sStaticSupportedModesManager;
 
 const int TASK_MAIN_PRIO         = OS_PRIO_3;
 const int TASK_MAIN_STACK_SIZE   = 800;
@@ -1066,6 +1069,7 @@ static void run_chip_srv(System::Layer * aSystemLayer, void * aAppState)
 
         static chip::CommonCaseDeviceServerInitParams initParams;
         (void) initParams.InitializeStaticResourcesBeforeServerInit();
+        initParams.dataModelProvider = CodegenDataModelProviderInstance();
         chip::Server::GetInstance().Init(initParams);
         PRINTF("Done to call chip::Server() \r\n");
     }
@@ -1083,6 +1087,7 @@ static void run_chip_srv(System::Layer * aSystemLayer, void * aAppState)
     // binding --
 
     chip::app::Clusters::TemperatureControl::SetInstance(&sAppSupportedTemperatureLevelsDelegate);
+    chip::app::Clusters::ModeSelect::setSupportedModesManager(&sStaticSupportedModesManager);
 
     return;
 }

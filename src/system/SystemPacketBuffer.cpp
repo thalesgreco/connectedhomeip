@@ -151,6 +151,8 @@ void PacketBufferHandle::InternalRightSize()
         return;
     }
 
+    SYSTEM_STATS_INCREMENT(chip::System::Stats::kSystemLayer_NumPacketBufs);
+
     uint8_t * const newStart = newBuffer->ReserveStart();
     newBuffer->next          = nullptr;
     newBuffer->payload       = newStart + (payload - start);
@@ -581,7 +583,8 @@ PacketBufferHandle PacketBufferHandle::New(size_t aAvailableSize, uint16_t aRese
 
     if (lAllocSize > PacketBuffer::kMaxAllocSize)
     {
-        ChipLogError(chipSystemLayer, "PacketBuffer: allocation exceeding buffer capacity limits.");
+        ChipLogError(chipSystemLayer, "PacketBuffer: allocation exceeding buffer capacity limits: %lu > %lu",
+                     static_cast<unsigned long>(lAllocSize), static_cast<unsigned long>(PacketBuffer::kMaxAllocSize));
         return PacketBufferHandle();
     }
 
@@ -617,7 +620,6 @@ PacketBufferHandle PacketBufferHandle::New(size_t aAvailableSize, uint16_t aRese
     // checked to fit in a size_t.
     const size_t lBlockSize = static_cast<size_t>(sumOfSizes);
     lPacket                 = reinterpret_cast<PacketBuffer *>(chip::Platform::MemoryAlloc(lBlockSize));
-    SYSTEM_STATS_INCREMENT(chip::System::Stats::kSystemLayer_NumPacketBufs);
 
 #else
 #error "Unimplemented PacketBuffer storage case"
@@ -628,6 +630,8 @@ PacketBufferHandle PacketBufferHandle::New(size_t aAvailableSize, uint16_t aRese
         ChipLogError(chipSystemLayer, "PacketBuffer: pool EMPTY.");
         return PacketBufferHandle();
     }
+
+    SYSTEM_STATS_INCREMENT(chip::System::Stats::kSystemLayer_NumPacketBufs);
 
     lPacket->payload = lPacket->ReserveStart() + aReservedSize;
     lPacket->len = lPacket->tot_len = 0;

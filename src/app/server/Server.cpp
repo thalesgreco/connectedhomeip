@@ -17,14 +17,16 @@
 
 #include <app/server/Server.h>
 
+#include <access/ProviderDeviceTypeResolver.h>
 #include <access/examples/ExampleAccessControlDelegate.h>
 
+#include <app/AppConfig.h>
 #include <app/EventManagement.h>
 #include <app/InteractionModelEngine.h>
+#include <app/data-model-provider/Provider.h>
 #include <app/server/Dnssd.h>
 #include <app/server/EchoHandler.h>
 #include <app/util/DataModelHandler.h>
-#include <app/util/ember-compatibility-functions.h>
 
 #if CONFIG_NETWORK_LAYER_BLE
 #include <ble/Ble.h>
@@ -56,6 +58,10 @@
 #include <system/TLVPacketBufferBackingStore.h>
 #include <transport/SessionManager.h>
 
+#if CHIP_DEVICE_CONFIG_ENABLE_WIFIPAF
+#include <transport/raw/WiFiPAF.h>
+#endif
+
 #if defined(CHIP_SUPPORT_ENABLE_STORAGE_API_AUDIT) || defined(CHIP_SUPPORT_ENABLE_STORAGE_LOAD_TEST_AUDIT)
 #include <lib/support/PersistentStorageAudit.h>
 #endif // defined(CHIP_SUPPORT_ENABLE_STORAGE_API_AUDIT) || defined(CHIP_SUPPORT_ENABLE_STORAGE_LOAD_TEST_AUDIT)
@@ -77,14 +83,9 @@ using chip::Transport::TcpListenParameters;
 
 namespace {
 
-class DeviceTypeResolver : public chip::Access::AccessControl::DeviceTypeResolver
-{
-public:
-    bool IsDeviceTypeOnEndpoint(chip::DeviceTypeId deviceType, chip::EndpointId endpoint) override
-    {
-        return chip::app::IsDeviceTypeOnEndpoint(deviceType, endpoint);
-    }
-} sDeviceTypeResolver;
+chip::Access::DynamicProviderDeviceTypeResolver sDeviceTypeResolver([] {
+    return chip::app::InteractionModelEngine::GetInstance()->GetDataModelProvider();
+});
 
 } // namespace
 
@@ -126,6 +127,15 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
     VerifyOrExit(initParams.opCertStore != nullptr, err = CHIP_ERROR_INVALID_ARGUMENT);
     VerifyOrExit(initParams.reportScheduler != nullptr, err = CHIP_ERROR_INVALID_ARGUMENT);
 
+    // Extra log since this is an incremental requirement and existing applications may not be aware
+    if (initParams.dataModelProvider == nullptr)
+    {
+        ChipLogError(AppServer, "Application Server requires a `initParams.dataModelProvider` value.");
+        ChipLogError(AppServer, "For backwards compatibility, you likely can use `CodegenDataModelProviderInstance()`");
+    }
+
+    VerifyOrExit(initParams.dataModelProvider != nullptr, err = CHIP_ERROR_INVALID_ARGUMENT);
+
     // TODO(16969): Remove chip::Platform::MemoryInit() call from Server class, it belongs to outer code
     chip::Platform::MemoryInit();
 
@@ -160,6 +170,17 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
     SetAttributePersistenceProvider(&mAttributePersister);
     SetSafeAttributePersistenceProvider(&mAttributePersister);
 
+    // SetDataModelProvider() actually initializes/starts the provider.  We need
+    // to preserve the following ordering guarantees:
+    //
+    // 1) Provider initialization (under SetDataModelProvider) happens after
+    //    SetSafeAttributePersistenceProvider, since the provider can then use
+    //    the safe persistence provider to implement and initialize its own attribute persistence logic.
+    // 2) For now, provider initialization happens before InitDataModelHandler(), which depends
+    //    on atttribute persistence being already set up before it runs.  Longer-term, the logic from
+    //    InitDataModelHandler should just move into the codegen provider.
+    chip::app::InteractionModelEngine::GetInstance()->SetDataModelProvider(initParams.dataModelProvider);
+
     {
         FabricTable::InitParams fabricTableInitParams;
         fabricTableInitParams.storage             = mDeviceStorage;
@@ -173,6 +194,13 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
     SuccessOrExit(err = mAccessControl.Init(initParams.accessDelegate, sDeviceTypeResolver));
     Access::SetAccessControl(mAccessControl);
 
+#if CHIP_CONFIG_USE_ACCESS_RESTRICTIONS
+    if (initParams.accessRestrictionProvider != nullptr)
+    {
+        mAccessControl.SetAccessRestrictionProvider(initParams.accessRestrictionProvider);
+    }
+#endif
+
     mAclStorage = initParams.aclStorage;
     SuccessOrExit(err = mAclStorage->Init(*mDeviceStorage, mFabrics.begin(), mFabrics.end()));
 
@@ -182,6 +210,10 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
     mReportScheduler = initParams.reportScheduler;
 
     mTestEventTriggerDelegate = initParams.testEventTriggerDelegate;
+    if (mTestEventTriggerDelegate == nullptr)
+    {
+        ChipLogProgress(AppServer, "WARNING: mTestEventTriggerDelegate is null");
+    }
 
     deviceInfoprovider = DeviceLayer::GetDeviceInfoProvider();
     if (deviceInfoprovider)
@@ -210,6 +242,10 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
                            TcpListenParameters(DeviceLayer::TCPEndPointManager())
                                .SetAddressType(IPAddressType::kIPv6)
                                .SetListenPort(mOperationalServicePort)
+#endif
+#if CHIP_DEVICE_CONFIG_ENABLE_WIFIPAF
+                               ,
+                           Transport::WiFiPAFListenParameters(DeviceLayer::ConnectivityMgr().GetWiFiPAF())
 #endif
     );
 
@@ -294,9 +330,9 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
 
     if (GetFabricTable().FabricCount() != 0)
     {
+#if CONFIG_NETWORK_LAYER_BLE
         // The device is already commissioned, proactively disable BLE advertisement.
         ChipLogProgress(AppServer, "Fabric already commissioned. Disabling BLE advertisement");
-#if CONFIG_NETWORK_LAYER_BLE
         chip::DeviceLayer::ConnectivityMgr().SetBLEAdvertisingEnabled(false);
 #endif
     }
@@ -355,11 +391,22 @@ CHIP_ERROR Server::Init(const ServerInitParams & initParams)
     mICDManager.RegisterObserver(mReportScheduler);
     mICDManager.RegisterObserver(&app::DnssdServer::Instance());
 
-    mICDManager.Init(mDeviceStorage, &GetFabricTable(), mSessionKeystore, &mExchangeMgr,
-                     chip::app::InteractionModelEngine::GetInstance());
+#if CHIP_CONFIG_ENABLE_ICD_CIP
+    mICDManager.SetPersistentStorageDelegate(mDeviceStorage)
+        .SetFabricTable(&GetFabricTable())
+        .SetSymmetricKeyStore(mSessionKeystore)
+        .SetExchangeManager(&mExchangeMgr)
+        .SetSubscriptionsInfoProvider(chip::app::InteractionModelEngine::GetInstance())
+        .SetICDCheckInBackOffStrategy(initParams.icdCheckInBackOffStrategy);
+
+#endif // CHIP_CONFIG_ENABLE_ICD_CIP
+    mICDManager.Init();
 
     // Register Test Event Trigger Handler
-    mTestEventTriggerDelegate->AddHandler(&mICDManager);
+    if (mTestEventTriggerDelegate != nullptr)
+    {
+        mTestEventTriggerDelegate->AddHandler(&mICDManager);
+    }
 
 #endif // CHIP_CONFIG_ENABLE_ICD_SERVER
 
@@ -596,6 +643,12 @@ void Server::Shutdown()
 #if CHIP_CONFIG_ENABLE_ICD_SERVER
     app::InteractionModelEngine::GetInstance()->SetICDManager(nullptr);
 #endif // CHIP_CONFIG_ENABLE_ICD_SERVER
+    // Shut down any remaining sessions (and hence exchanges) before we do any
+    // futher teardown.  CASE handshakes have been shut down already via
+    // shutting down mCASESessionManager and mCASEServer above; shutting
+    // down mCommissioningWindowManager will shut down any PASE handshakes we
+    // have going on.
+    mSessions.ExpireAllSecureSessions();
     mCommissioningWindowManager.Shutdown();
     mMessageCounterManager.Shutdown();
     mExchangeMgr.Shutdown();
@@ -606,7 +659,10 @@ void Server::Shutdown()
     Credentials::SetGroupDataProvider(nullptr);
 #if CHIP_CONFIG_ENABLE_ICD_SERVER
     // Remove Test Event Trigger Handler
-    mTestEventTriggerDelegate->RemoveHandler(&mICDManager);
+    if (mTestEventTriggerDelegate != nullptr)
+    {
+        mTestEventTriggerDelegate->RemoveHandler(&mICDManager);
+    }
     mICDManager.Shutdown();
 #endif // CHIP_CONFIG_ENABLE_ICD_SERVER
     mAttributePersister.Shutdown();
@@ -753,5 +809,8 @@ app::SimpleSubscriptionResumptionStorage CommonCaseDeviceServerInitParams::sSubs
 #endif
 app::DefaultAclStorage CommonCaseDeviceServerInitParams::sAclStorage;
 Crypto::DefaultSessionKeystore CommonCaseDeviceServerInitParams::sSessionKeystore;
+#if CHIP_CONFIG_ENABLE_ICD_CIP
+app::DefaultICDCheckInBackOffStrategy CommonCaseDeviceServerInitParams::sDefaultICDCheckInBackOffStrategy;
+#endif
 
 } // namespace chip

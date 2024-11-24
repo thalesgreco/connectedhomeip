@@ -26,7 +26,11 @@ void registerCommandsFabricSync(Commands & commands, CredentialIssuerCommands * 
     const char * clusterName = "FabricSync";
 
     commands_list clusterCommands = {
-        make_unique<FabricSyncAddDeviceCommand>(credsIssuerConfig),
+        make_unique<admin::FabricSyncAddBridgeCommand>(credsIssuerConfig),
+        make_unique<admin::FabricSyncRemoveBridgeCommand>(credsIssuerConfig),
+        make_unique<admin::FabricSyncAddLocalBridgeCommand>(credsIssuerConfig),
+        make_unique<admin::FabricSyncRemoveLocalBridgeCommand>(credsIssuerConfig),
+        make_unique<admin::FabricSyncDeviceCommand>(credsIssuerConfig),
     };
 
     commands.RegisterCommandSet(clusterName, clusterCommands, "Commands for fabric synchronization.");

@@ -16,6 +16,7 @@ import logging
 import os
 import shlex
 from enum import Enum, auto
+from typing import Optional
 
 from .builder import Builder, BuilderOutput
 
@@ -153,7 +154,7 @@ class Esp32Builder(Builder):
                  app: Esp32App = Esp32App.ALL_CLUSTERS,
                  enable_rpcs: bool = False,
                  enable_ipv4: bool = True,
-                 enable_insights_trace: bool = False
+                 enable_insights_trace: bool = False,
                  ):
         super(Esp32Builder, self).__init__(root, runner)
         self.board = board
@@ -197,6 +198,8 @@ class Esp32Builder(Builder):
         if not self.enable_ipv4:
             self._Execute(
                 ['bash', '-c', 'echo -e "\\nCONFIG_DISABLE_IPV4=y\\n" >>%s' % shlex.quote(defaults_out)])
+            self._Execute(
+                ['bash', '-c', 'echo -e "\\nCONFIG_LWIP_IPV4=n\\n" >>%s' % shlex.quote(defaults_out)])
 
         if self.enable_insights_trace:
             insights_flag = 'y'

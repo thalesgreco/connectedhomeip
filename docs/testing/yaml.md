@@ -334,7 +334,7 @@ Next build the python wheels and create a venv (called `py` here, but any name
 may be used)
 
 ```
-./scripts/build_python.sh -i py
+./scripts/build_python.sh -i out/python_env
 source py/bin/activate
 ```
 
@@ -349,7 +349,16 @@ NOTE: use the target appropriate to your system
 
 [chiptool.py](https://github.com/project-chip/connectedhomeip/blob/master/scripts/tests/chipyaml/chiptool.py)
 can be used to run tests against a commissioned DUT (commissioned by chip-tool).
-This will start an interactive instance of chip-tool automatically.
+To commission a DUT using chip-tool use the pairing command. For example:
+
+```
+./out/linux-x64-chip-tool/chip-tool pairing code 0x12344321 MT:-24J0AFN00KA0648G00
+```
+
+In this example, 0x12344321 is the node ID (0x12344321 is the test default) and
+MT:-24J0AFN00KA0648G00 is the QR code.
+
+The chiptool.py tool can then be used to run the tests. For example:
 
 ```
 ./scripts/tests/chipyaml/chiptool.py tests Test_TC_OO_2_1 --server_path ./out/linux-x64-chip-tool/chip-tool
